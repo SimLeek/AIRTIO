@@ -1,0 +1,10 @@
+build/
+.cache
+*.mp4
+.idea
+__pycache__/
+test/build_tests
+docs/
+*.so
+*.egg-info
+*.prof

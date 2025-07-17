@@ -4,11 +4,13 @@ import spec_encoding  # C++ module
 
 print(dir(spec_encoding))
 
+
 class EdgeDetector:
     @staticmethod
-    def apply(image):
-        """Apply edge detection using C++ implementation."""
-        return spec_encoding.apply_edge_detector(image)
+    def apply(image, output):
+        """Apply edge detection using C++ implementation with pre-allocated output."""
+        return spec_encoding.apply_edge_detector(image, output)
+
 
 def create_gaussian_pyramid(frame, min_size=1):
     """Create a pyramid using manual downscaling with INTER_AREA."""
@@ -21,27 +23,33 @@ def create_gaussian_pyramid(frame, min_size=1):
         pyramid.append(current)
     return pyramid
 
-def compute_positional_encodings(xs, ys, level, width, height, max_width, max_height, levels):
-    """Compute positional encodings for multiple pixels at a given level."""
-    rw_values = np.array([2 ** i for i in range(int(np.ceil(np.log2(max_width))) + 1)], dtype=np.float32)
-    rh_values = np.array([2 ** i for i in range(int(np.ceil(np.log2(max_height))) + 1)], dtype=np.float32)
-    rl_values = np.array([2 ** i for i in range(int(np.ceil(np.log2(levels))) + 1)], dtype=np.float32)
 
+def compute_positional_encodings(xs, ys, level, width, height, max_width, max_height, levels):
+    """Compute positional encodings for multiple pixels at a given level using vectorized operations."""
+    # Pre-compute all r values
+    rw_len = int(np.ceil(np.log2(max_width))) + 1
+    rh_len = int(np.ceil(np.log2(max_height))) + 1
+    rl_len = int(np.ceil(np.log2(levels))) + 1
+
+    # Create r values arrays
+    rw_values = 2.0 ** np.arange(rw_len, dtype=np.float32)
+    rh_values = 2.0 ** np.arange(rh_len, dtype=np.float32)
+    rl_values = 2.0 ** np.arange(rl_len, dtype=np.float32)
+
+    # Compute relative positions
     center_x, center_y, center_l = width / 2, height / 2, levels / 2
     rel_x = xs - center_x
     rel_y = ys - center_y
     rel_l = level - center_l
 
-    num_pixels = len(xs)
-    encoding_len = len(rw_values) + len(rh_values) + len(rl_values)
-    encodings = np.zeros((encoding_len, num_pixels), dtype=np.float32)
+    # Vectorized computation using broadcasting
+    # Shape: (num_r_values, num_pixels)
+    x_encodings = np.sin((rel_x[None, :] * np.pi / 2) / rw_values[:, None])
+    y_encodings = np.sin((rel_y[None, :] * np.pi / 2) / rh_values[:, None])
+    l_encodings = np.sin((rel_l * np.pi / 2) / rl_values[:, None])
 
-    for i, r in enumerate(rw_values):
-        encodings[i] = np.sin((rel_x * np.pi / 2) / r)
-    for i, r in enumerate(rh_values):
-        encodings[i + len(rw_values)] = np.sin((rel_y * np.pi / 2) / r)
-    for i, r in enumerate(rl_values):
-        encodings[i + len(rw_values) + len(rh_values)] = np.sin((rel_l * np.pi / 2) / r)
+    # Concatenate all encodings
+    encodings = np.vstack([x_encodings, y_encodings, l_encodings])
 
     return encodings
 
@@ -70,17 +78,20 @@ class SPEC:
         self.alpha = alpha
         self.energy_arrays = None
         self.input_frame_shape = None
+        self.edges_buffer = None  # Pre-allocated buffer for edge detection
 
     def __call__(self, frame):
         pyramid = create_gaussian_pyramid(frame)
 
         if (
-            self.energy_arrays is None or
-            self.input_frame_shape is None or frame.shape != self.input_frame_shape
-            #any(pyramid[i].shape != self.energy_arrays[i].shape for i in range(len(pyramid)))
+                self.energy_arrays is None or
+                self.input_frame_shape is None or frame.shape != self.input_frame_shape
+                # any(pyramid[i].shape != self.energy_arrays[i].shape for i in range(len(pyramid)))
         ):
             self.energy_arrays = [np.zeros_like(p) for p in pyramid]
             self.input_frame_shape = frame.shape
+            # Pre-allocate edge detection buffers for each pyramid level
+            self.edges_buffer = [np.zeros_like(p) for p in pyramid]
 
             self.max_total_pixels = frame.shape[0]*frame.shape[1]*2  # known ahead of time by geometric sum
             self.y_indices_buffer = np.empty(self.max_total_pixels, dtype=np.int32)
@@ -107,8 +118,9 @@ class SPEC:
                 self.values_buffer = np.empty((value_dim, self.max_total_pixels), dtype=np.float32)
 
             if min(img.shape[:2]) > 1:
-                edges = EdgeDetector.apply(img)
-                self.energy_arrays[level] += edges * self.energy_per_frame
+                # Use pre-allocated buffer for edge detection
+                EdgeDetector.apply(img, self.edges_buffer[level])
+                self.energy_arrays[level] += self.edges_buffer[level] * self.energy_per_frame
 
                 mask = spec_encoding.create_mask(self.energy_arrays[level], 1.0)
                 ys, xs = np.nonzero(mask)

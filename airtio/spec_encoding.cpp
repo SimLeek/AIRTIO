@@ -23,20 +23,18 @@ public:
         kernel /= sum_abs;
     }
 
-    static py::array_t<float> apply(py::array_t<float> image) {
+    static void apply(py::array_t<float> image, py::array_t<float> output) {
         auto buf = image.request();
+        auto out_buf = output.request();
+
         int height = buf.shape[0];
         int width = buf.shape[1];
         int channels = buf.shape[2];
-        cv::Mat img(height, width, CV_32FC(channels), buf.ptr);
 
-        py::array_t<float> result = py::array_t<float>({height, width, channels});
-        auto result_buf = result.request();
-        cv::Mat result_mat(height, width, CV_32FC(channels), result_buf.ptr);
+        cv::Mat img(height, width, CV_32FC(channels), buf.ptr);
+        cv::Mat result_mat(height, width, CV_32FC(channels), out_buf.ptr);
 
         cv::filter2D(img, result_mat, -1, kernel);
-
-        return result;
     }
 
     static py::array_t<bool> create_mask(py::array_t<float> energy_array, float threshold) {
@@ -86,6 +84,6 @@ cv::Mat EdgeDetector::kernel;
 
 PYBIND11_MODULE(spec_encoding, m) {
     EdgeDetector::init_kernel();
-    m.def("apply_edge_detector", &EdgeDetector::apply, "Apply edge detection to an image");
+    m.def("apply_edge_detector", &EdgeDetector::apply, "Apply edge detection to an image with pre-allocated output");
     m.def("create_mask", &EdgeDetector::create_mask, "Create a mask for energy values above threshold");
 }

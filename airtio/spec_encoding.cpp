@@ -34,7 +34,6 @@ public:
         auto result_buf = result.request();
         cv::Mat result_mat(height, width, CV_32FC(channels), result_buf.ptr);
 
-        int num_sections = omp_get_max_threads();
         cv::filter2D(img, result_mat, -1, kernel);
 
         return result;
@@ -65,31 +64,17 @@ public:
             }
         } else {
             mask_mat = cv::Mat::zeros(height, width, CV_8U);
-            int num_sections = omp_get_max_threads();
-            int section_height = height / num_sections;
 
-            //#pragma omp parallel for
-            for (int i = 0; i < num_sections; ++i) {
-                int start_y = i * section_height;
-                int end_y = (i == num_sections - 1) ? height : (i + 1) * section_height;
-                cv::Mat section = energy(cv::Range(start_y, end_y), cv::Range::all());
-                cv::Mat local_mask = cv::Mat::zeros(end_y - start_y, width, CV_8U);
-
-                for (int y = 0; y < local_mask.rows; ++y) {
-                    for (int x = 0; x < width; ++x) {
-                        for (int c = 0; c < channels; ++c) {
-                            if (section.at<cv::Vec<float, 3>>(y, x)[c] > threshold) {
-                                local_mask.at<uchar>(y, x) = 1;
-                                break;
-                            }
+            #pragma omp parallel for
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    for (int c = 0; c < channels; ++c) {
+                        if (energy.at<cv::Vec<float, 3>>(y, x)[c] > threshold) {
+                            mask_mat.at<uchar>(y, x) = 1;
+                            break;
                         }
                     }
                 }
-
-                //#pragma omp critical
-                //{
-                local_mask.copyTo(mask_mat(cv::Range(start_y, end_y), cv::Range::all()));
-                //}
             }
         }
 

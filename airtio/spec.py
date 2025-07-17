@@ -78,8 +78,8 @@ class SPEC:
 
         if (
             self.energy_arrays is None or
-            len(self.energy_arrays) != len(pyramid) or
-            any(pyramid[i].shape != self.energy_arrays[i].shape for i in range(len(pyramid)))
+            len(self.energy_arrays) != len(pyramid)# or
+            #any(pyramid[i].shape != self.energy_arrays[i].shape for i in range(len(pyramid)))
         ):
             self.energy_arrays = [np.zeros_like(p) for p in pyramid]
 
@@ -159,6 +159,17 @@ class SPEC:
 
         return y_indices, x_indices, l_indices, values, ptrs, [heights, widths, levels]
 
+def proc_vid_sec(cap, max_frames, frame_count, spec):
+    ret, frame = cap.read()
+    if not ret or (max_frames is not None and frame_count >= max_frames):
+        return None
+    #float_frame = frame.astype(np.float32) / 255.0
+    float_frame = np.empty_like(frame, dtype=np.float32)
+    cv2.convertScaleAbs(frame, dst=float_frame, alpha=1.0 / 255.0)
+    spec(float_frame)
+    frame_count += 1
+    return frame_count
+
 def process_video(input_path, energy_factor=0.5, max_frames=None):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -167,21 +178,90 @@ def process_video(input_path, energy_factor=0.5, max_frames=None):
     spec = SPEC(energy_factor)
     frame_count = 0
     while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret or (max_frames is not None and frame_count >= max_frames):
+        frame_count = proc_vid_sec(cap, max_frames, frame_count, spec)
+        if frame_count is None:
             break
-        float_frame = frame.astype(np.float32) / 255.0
-        spec(float_frame)
-        frame_count += 1
     cap.release()
     return frame_count
 
 def main():
     import cProfile, pstats
-    cProfile.run('process_video("input_video.mp4", max_frames=100)', 'prof_data.prof')
-    p = pstats.Stats('prof_data.prof')
-    p.sort_stats('cumtime').print_stats()
-    p.sort_stats('tottime').print_stats()
+
+    class Stats(pstats.Stats):
+        # https://stackoverflow.com/a/78404643/782170
+        # list the tuple indices and directions for sorting,
+        # along with some printable description
+        sort_arg_dict_default = {
+            "calls": (((1, -1),), "call count"),
+            "ncalls": (((1, -1),), "call count"),
+            "cumtime": (((4, -1),), "cumulative time"),
+            "cumulative": (((4, -1),), "cumulative time"),
+            "file": (((6, 1),), "file name"),
+            "filename": (((6, 1),), "file name"),
+            "line": (((7, 1),), "line number"),
+            "module": (((6, 1),), "file name"),
+            "name": (((8, 1),), "function name"),
+            "nfl": (((8, 1), (6, 1), (7, 1),), "name/file/line"),
+            "pcalls": (((0, -1),), "primitive call count"),
+            "stdname": (((9, 1),), "standard name"),
+            "time": (((2, -1),), "internal time"),
+            "tottime": (((2, -1),), "internal time"),
+            "cumulativepercall": (((5, -1),), "cumulative time per call"),
+            "totalpercall": (((3, -1),), "total time per call"),
+        }
+
+        def sort_stats(self, *field):
+            if not field:
+                self.fcn_list = 0
+                return self
+            if len(field) == 1 and isinstance(field[0], int):
+                # Be compatible with old profiler
+                field = [{-1: "stdname",
+                          0: "calls",
+                          1: "time",
+                          2: "cumulative"}[field[0]]]
+            elif len(field) >= 2:
+                for arg in field[1:]:
+                    if type(arg) != type(field[0]):
+                        raise TypeError("Can't have mixed argument type")
+
+            sort_arg_defs = self.get_sort_arg_defs()
+
+            sort_tuple = ()
+            self.sort_type = ""
+            connector = ""
+            for word in field:
+                if isinstance(word, pstats.SortKey):
+                    word = word.value
+                sort_tuple = sort_tuple + sort_arg_defs[word][0]
+                self.sort_type += connector + sort_arg_defs[word][1]
+                connector = ", "
+
+            stats_list = []
+            for func, (cc, nc, tt, ct, callers) in self.stats.items():
+                if nc == 0:
+                    npc = 0
+                else:
+                    npc = float(tt) / nc
+
+                if cc == 0:
+                    cpc = 0
+                else:
+                    cpc = float(ct) / cc
+
+                stats_list.append((cc, nc, tt, npc, ct, cpc) + func +
+                                  (pstats.func_std_string(func), func))
+
+            stats_list.sort(key=pstats.cmp_to_key(pstats.TupleComp(sort_tuple).compare))
+
+            self.fcn_list = fcn_list = []
+            for tuple in stats_list:
+                fcn_list.append(tuple[-1])
+            return self
+
+    cProfile.run('process_video("input_video_1080p.mp4", max_frames=1000)', 'prof_data.prof')
+    p = Stats('prof_data.prof')
+    p.sort_stats('cumulativepercall').print_stats()
 
 if __name__ == "__main__":
     main()

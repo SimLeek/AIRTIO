@@ -103,7 +103,8 @@ class SPEC:
         widths = []
         max_height, max_width = pyramid[0].shape[:2]
 
-        for level, img in enumerate(pyramid):
+        for rlevel, img in enumerate(reversed(pyramid)):
+            level = levels - 1 - rlevel
             height, width, channels = img.shape[:3]
             heights.append(height)
             widths.append(width)

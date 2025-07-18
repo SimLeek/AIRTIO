@@ -2,18 +2,15 @@ import cv2
 import numpy as np
 import spec_encoding  # C++ module
 
-print(dir(spec_encoding))
-
-
 class EdgeDetector:
     @staticmethod
     def apply(image, output):
         """Apply edge detection using C++ implementation with pre-allocated output."""
         return spec_encoding.apply_edge_detector(image, output)
 
-
 def create_gaussian_pyramid(frame, min_size=1):
     """Create a pyramid using manual downscaling with INTER_AREA."""
+    SIZE_THRESHOLD = 65536  # Same as C++ threshold
     pyramid = [frame]
     current = frame
     while min(current.shape[:2]) > min_size:
@@ -22,7 +19,6 @@ def create_gaussian_pyramid(frame, min_size=1):
         current = cv2.resize(current, (new_width, new_height), interpolation=cv2.INTER_AREA)
         pyramid.append(current)
     return pyramid
-
 
 def compute_positional_encodings(xs, ys, level, width, height, max_width, max_height, levels):
     """Compute positional encodings for multiple pixels at a given level using vectorized operations."""
@@ -43,16 +39,18 @@ def compute_positional_encodings(xs, ys, level, width, height, max_width, max_he
     rel_l = level - center_l
 
     # Vectorized computation using broadcasting
-    # Shape: (num_r_values, num_pixels)
     x_encodings = np.sin((rel_x[None, :] * np.pi / 2) / rw_values[:, None])
     y_encodings = np.sin((rel_y[None, :] * np.pi / 2) / rh_values[:, None])
     l_encodings = np.sin((rel_l * np.pi / 2) / rl_values[:, None])
+
+    # Replicate l_encodings to match n pixels
+    n = xs.shape[0]
+    l_encodings = np.repeat(l_encodings, n, axis=1)  # Shape: (rl_len, n)
 
     # Concatenate all encodings
     encodings = np.vstack([x_encodings, y_encodings, l_encodings])
 
     return encodings
-
 
 class SPEC:
     def __init__(self, energy_per_frame=None, target_nnz=None, target_bits_per_frame=None, alpha=0.05):
@@ -86,18 +84,17 @@ class SPEC:
         if (
                 self.energy_arrays is None or
                 self.input_frame_shape is None or frame.shape != self.input_frame_shape
-                # any(pyramid[i].shape != self.energy_arrays[i].shape for i in range(len(pyramid)))
         ):
             self.energy_arrays = [np.zeros_like(p) for p in pyramid]
             self.input_frame_shape = frame.shape
-            # Pre-allocate edge detection buffers for each pyramid level
             self.edges_buffer = [np.zeros_like(p) for p in pyramid]
+            #self.mask_buffer = [np.zeros(p.shape[:2], dtype=bool) for p in pyramid]
 
-            self.max_total_pixels = frame.shape[0]*frame.shape[1]*2  # known ahead of time by geometric sum
+            self.max_total_pixels = frame.shape[0]*frame.shape[1]*2
             self.y_indices_buffer = np.empty(self.max_total_pixels, dtype=np.int32)
             self.x_indices_buffer = np.empty(self.max_total_pixels, dtype=np.int32)
             self.l_indices_buffer = np.empty(self.max_total_pixels, dtype=np.int32)
-            self.values_buffer = None  # Will be allocated once we know dimensions
+            self.values_buffer = None
 
         levels = len(pyramid)
         total_count = 0
@@ -113,17 +110,17 @@ class SPEC:
             encoding_len = int(np.ceil(np.log2(max_width))) + 1 + int(np.ceil(np.log2(max_height))) + 1 + int(np.ceil(np.log2(levels))) + 1
             value_dim = channels + encoding_len
 
-            # Allocate values buffer on first use
             if self.values_buffer is None:
                 self.values_buffer = np.empty((value_dim, self.max_total_pixels), dtype=np.float32)
 
-            if min(img.shape[:2]) > 1:
-                # Use pre-allocated buffer for edge detection
-                EdgeDetector.apply(img, self.edges_buffer[level])
-                self.energy_arrays[level] += self.edges_buffer[level] * self.energy_per_frame
 
-                mask = spec_encoding.create_mask(self.energy_arrays[level], 1.0)
-                ys, xs = np.nonzero(mask)
+            if min(img.shape[:2]) > 1:
+                EdgeDetector.apply(img, self.edges_buffer[level])
+                self.energy_arrays[level] += np.abs(self.edges_buffer[level]) * self.energy_per_frame
+
+                xs, ys =  spec_encoding.create_mask(self.energy_arrays[level], 1.0)
+                #mask = self.mask_buffer[level]
+                # ys, xs = np.nonzero(self.mask_buffer[level])
                 idx = len(ys)
 
                 if idx > 0:
@@ -170,15 +167,16 @@ class SPEC:
             error = current_bytes - self.target_bytes_per_frame
             self.energy_per_frame *= (1.0 - self.alpha * np.sign(error))
 
+        print(total_count, values)
+
         return y_indices, x_indices, l_indices, values, ptrs, [heights, widths, levels]
 
 def proc_vid_sec(cap, max_frames, frame_count, spec):
     ret, frame = cap.read()
     if not ret or (max_frames is not None and frame_count >= max_frames):
         return None
-    #float_frame = frame.astype(np.float32) / 255.0
-    float_frame = np.empty_like(frame, dtype=np.float32)
-    cv2.convertScaleAbs(frame, dst=float_frame, alpha=1.0 / 255.0)
+    float_frame = frame.astype(np.float32) / 255.0
+    #cv2.convertScaleAbs(frame, dst=float_frame, alpha=1.0 / 255.0)
     spec(float_frame)
     frame_count += 1
     return frame_count
@@ -201,9 +199,6 @@ def main():
     import cProfile, pstats
 
     class Stats(pstats.Stats):
-        # https://stackoverflow.com/a/78404643/782170
-        # list the tuple indices and directions for sorting,
-        # along with some printable description
         sort_arg_dict_default = {
             "calls": (((1, -1),), "call count"),
             "ncalls": (((1, -1),), "call count"),
@@ -228,7 +223,6 @@ def main():
                 self.fcn_list = 0
                 return self
             if len(field) == 1 and isinstance(field[0], int):
-                # Be compatible with old profiler
                 field = [{-1: "stdname",
                           0: "calls",
                           1: "time",
@@ -272,7 +266,7 @@ def main():
                 fcn_list.append(tuple[-1])
             return self
 
-    cProfile.run('process_video("input_video_1080p.mp4", max_frames=1000)', 'prof_data.prof')
+    cProfile.run('process_video("input_video.mp4", max_frames=1000)', 'prof_data.prof')
     p = Stats('prof_data.prof')
     p.sort_stats('cumtime').print_stats()
 

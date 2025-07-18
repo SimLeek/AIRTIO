@@ -26,8 +26,9 @@ ext_modules = [
         include_dirs=include_dirs,
         library_dirs=library_dirs,
         libraries=libraries + ['gomp'],  # OpenMP
-        extra_compile_args=['-O3', '-Wall',  '-std=c++20', '-fPIC', '-march=native', '-ffast-math'],
-        extra_link_args=[],
+        extra_compile_args=['-O3', '-Wall',  '-std=c++20', '-fPIC', '-march=native', '-ffast-math', '-fopenmp'],
+        #extra_compile_args=['-O0', '-g', '-Wall', '-std=c++20', '-fPIC', '-march=native', '-ffast-math'],
+        extra_link_args=['-fopenmp'],
         language='c++'
     )
 ]
